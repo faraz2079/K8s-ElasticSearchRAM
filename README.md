@@ -15,11 +15,11 @@ Loader pods → continuously index synthetic-but-realistic log documents → Ela
 Companion to ffmpeg-stress-test (CPU stress). Run both for full CPU + RAM saturation.
 
 ## Quick Start
-git clone <this-repo>
-cd elasticsearch-stress-test
-cp .env.example .env
-./setup.sh
-./run.sh
+- git clone <this-repo>
+- cd elasticsearch-stress-test
+- cp .env.example .env
+- ./setup.sh
+- ./run.sh
 
 ## Sizing
 
@@ -31,5 +31,3 @@ cp .env.example .env
 
 Rule: JVM heap ≤ 50% of node RAM, never exceed 31 GiB per node.
 
-## License
-MIT

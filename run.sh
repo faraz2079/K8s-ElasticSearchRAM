@@ -20,9 +20,13 @@ mkdir -p "$OUT"
 echo "Run: $TS  Loaders: $DESIRED_REPLICAS  Max: ${MAX_DURATION}s"
 
 do_cleanup() {
-  echo "[CLEANUP] Scaling loader to 0..."
-  kubectl scale deployment es-loader -n $NS --replicas=0 > /dev/null 2>&1 || true
-  echo "[CLEANUP] Done. (Elasticsearch left running — use ./teardown.sh to delete it)"
+  if [ "${KEEP_ES_RUNNING:-false}" = "true" ]; then
+    echo "[CLEANUP] Scaling loader to 0 (keeping ES running)..."
+    kubectl scale deployment es-loader -n $NS --replicas=0 > /dev/null 2>&1 || true
+    kubectl wait --for=delete pods -l app=es-loader -n $NS --timeout=30s 2>/dev/null || true
+  else
+    bash "$PWD/scripts/cleanup.sh"
+  fi
 }
 
 if ! kubectl get namespace $NS > /dev/null 2>&1; then

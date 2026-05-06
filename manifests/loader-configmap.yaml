@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loader-script
+  namespace: __NAMESPACE__
+data:
+  loader.py: |
+    import os, time, random, string, json, signal, sys
+    from elasticsearch import Elasticsearch, helpers
+    from faker import Faker
+
+    ES_HOST = os.environ.get('ES_HOST', 'http://elasticsearch:9200')
+    BATCH_SIZE = int(os.environ.get('BATCH_SIZE', 500))
+    DOCS_PER_BATCH = int(os.environ.get('DOCS_PER_BATCH', 10000))
+
+    fake = Faker()
+    es = None
+
+    # Wait for ES
+    for i in range(60):
+        try:
+            es = Elasticsearch([ES_HOST], request_timeout=10)
+            if es.ping():
+                print(f"Connected to ES at {ES_HOST}", flush=True)
+                break
+        except Exception as e:
+            print(f"Waiting for ES... ({e})", flush=True)
+            time.sleep(5)
+    else:
+        print("ES never came up", flush=True)
+        sys.exit(1)
+
+    def shutdown(signum, frame):
+        print("[SHUTDOWN] exiting", flush=True)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    LEVELS = ["DEBUG","INFO","WARN","ERROR","CRITICAL"]
+    SERVICES = ["api","auth","payment","search","cart","checkout","analytics","notify","billing","fraud"]
+
+    def gen_doc():
+        return {
+            "@timestamp": fake.iso8601(),
+            "level": random.choice(LEVELS),
+            "service": random.choice(SERVICES),
+            "host": fake.hostname(),
+            "user_id": random.randint(1, 1000000),
+            "session_id": fake.uuid4(),
+            "ip": fake.ipv4(),
+            "user_agent": fake.user_agent(),
+            "method": random.choice(["GET","POST","PUT","DELETE","PATCH"]),
+            "path": fake.uri_path(),
+            "status": random.choice([200,200,200,201,301,400,404,500]),
+            "duration_ms": random.randint(1, 2000),
+            "bytes": random.randint(100, 1000000),
+            "message": fake.sentence(nb_words=20),
+            "tags": random.sample(["prod","staging","beta","cache","slow","retry","auth","db"], k=3),
+            "geo": {"country": fake.country_code(), "city": fake.city()},
+            "trace_id": fake.uuid4(),
+        }
+
+    batch_num = 0
+    total_docs = 0
+    while True:
+        index_name = f"logs-{time.strftime('%Y.%m.%d')}-batch{batch_num % 10}"
+        actions = [{"_index": index_name, "_source": gen_doc()} for _ in range(DOCS_PER_BATCH)]
+        try:
+            ok, errors = helpers.bulk(es, actions, chunk_size=BATCH_SIZE, raise_on_error=False)
+            total_docs += ok
+            print(f"[BATCH {batch_num}] indexed {ok} docs (total {total_docs})", flush=True)
+
+            # Run a few queries to populate caches and add CPU pressure
+            es.search(index="logs-*", body={
+                "size": 0,
+                "aggs": {
+                    "by_service": {"terms": {"field": "service.keyword", "size": 20}},
+                    "by_status":  {"terms": {"field": "status", "size": 20}},
+                    "avg_dur":    {"avg":   {"field": "duration_ms"}}
+                }
+            }, request_timeout=30)
+        except Exception as e:
+            print(f"[ERROR] {e}", flush=True)
+            time.sleep(5)
+
+        batch_num += 1

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: es-loader
+  namespace: __NAMESPACE__
+spec:
+  replicas: __LOADER_REPLICAS__
+  selector:
+    matchLabels:
+      app: es-loader
+  template:
+    metadata:
+      labels:
+        app: es-loader
+    spec:
+      containers:
+      - name: loader
+        image: python:3.11-slim
+        command: ["bash","-c"]
+        args:
+        - |
+          pip install --quiet elasticsearch faker requests
+          python /scripts/loader.py
+        env:
+        - name: ES_HOST
+          value: http://elasticsearch:9200
+        - name: BATCH_SIZE
+          value: "__LOADER_BATCH_SIZE__"
+        - name: DOCS_PER_BATCH
+          value: "__LOADER_DOCS_PER_BATCH__"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: loader-script

@@ -58,8 +58,9 @@ python3 scripts/fire-load.py --host http://localhost:30920 \
 |---|---|---|
 | `--host` | `http://localhost:30920` | ES endpoint |
 | `--target-ram` | prompts | RAM % target (e.g. `78`) |
-| `--duration` | prompts | Test duration in minutes |
+| `--duration` | prompts | Experiment duration in minutes (timer starts after warmup) |
 | `--threads` | prompts | Parallel indexing threads (4–16 recommended) |
+| `--warmup` | `0` | Minutes to index at full throttle before the timed experiment |
 | `--yes` | off | Skip confirmation prompt |
 
 ---
@@ -71,7 +72,9 @@ Elasticsearch consumes RAM in two ways:
 1. **JVM heap** — controlled by `ES_HEAP_SIZE`. Used for indexes, query caches, aggregations.
 2. **OS page cache** — Lucene MMap'd segment files cached by the kernel. Grows with indexed data.
 
-The heap is configured as **static** (`-Xms == -Xmx`), so the full heap is pre-committed at pod startup. This means RAM usage is high immediately — no warm-up period needed. At `ES_HEAP_SIZE=16g` on a 45 GiB node, RAM sits at ~80% before a single document is indexed.
+The heap is configured as **static** (`-Xms == -Xmx`), so the full heap is pre-committed at pod startup. RAM usage is high immediately — at `ES_HEAP_SIZE=16g` on a 45 GiB node, RAM sits at ~80% before a single document is indexed.
+
+An optional `--warmup` phase runs workers at full throttle for N minutes before the timed experiment begins. This lets OS page cache and query caches fill before the P-controller takes over. The experiment timer only starts after warmup completes, so `--duration` always reflects actual experiment time.
 
 `fire-load.py` then runs a P-controller that throttles write throughput to hold RAM near the configured target:
 

@@ -28,6 +28,12 @@ spec:
           value: "__LOADER_BATCH_SIZE__"
         - name: DOCS_PER_BATCH
           value: "__LOADER_DOCS_PER_BATCH__"
+        - name: BURST_SECONDS            # NEW
+          value: "__BURST_SECONDS__"
+        - name: REST_SECONDS              # NEW
+          value: "__REST_SECONDS__"
+        - name: LOADER_THREADS            # NEW
+          value: "__LOADER_THREADS__"
         resources:
           requests:
             cpu: "1"

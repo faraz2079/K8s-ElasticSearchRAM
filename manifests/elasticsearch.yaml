@@ -1,15 +1,4 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: es-data
-  namespace: __NAMESPACE__
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: __ES_STORAGE__
----
+# manifests/elasticsearch.yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -26,57 +15,74 @@ spec:
       labels:
         app: elasticsearch
     spec:
+      terminationGracePeriodSeconds: 120
       initContainers:
-      - name: fix-permissions
-        image: busybox:1.36
-        command: ["sh","-c","chown -R 1000:1000 /usr/share/elasticsearch/data"]
-        volumeMounts:
-        - name: data
-          mountPath: /usr/share/elasticsearch/data
-        securityContext:
-          runAsUser: 0
-      - name: increase-vm-max-map
-        image: busybox:1.36
-        command: ["sh","-c","sysctl -w vm.max_map_count=262144"]
-        securityContext:
-          privileged: true
+        - name: fix-permissions
+          image: busybox
+          command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+          volumeMounts:
+            - name: es-data
+              mountPath: /usr/share/elasticsearch/data
+        - name: increase-vm-max-map
+          image: busybox
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+          securityContext:
+            privileged: true
       containers:
-      - name: elasticsearch
-        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
-        env:
-        - name: discovery.type
-          value: single-node
-        - name: xpack.security.enabled
-          value: "false"
-        - name: ES_JAVA_OPTS
-          value: "-Xms__ES_HEAP_SIZE__ -Xmx__ES_HEAP_SIZE__"
-        - name: cluster.name
-          value: stress-cluster
-        - name: bootstrap.memory_lock
-          value: "true"
-        ports:
-        - containerPort: 9200
-          name: http
-        - containerPort: 9300
-          name: transport
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+          ports:
+            - containerPort: 9200
+            - containerPort: 9300
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: ES_JAVA_OPTS
+              value: "-Xms__ES_HEAP_SIZE__ -Xmx__ES_HEAP_SIZE__"
+            - name: xpack.security.enabled
+              value: "false"
+            - name: bootstrap.memory_lock
+              value: "false"
+            - name: indices.queries.cache.size
+              value: "30%"
+            - name: indices.fielddata.cache.size
+              value: "40%"
+            - name: indices.memory.index_buffer_size
+              value: "20%"
+            - name: indices.breaker.total.limit
+              value: "90%"
+          resources:
+            requests:
+              memory: "__ES_MEM_REQUEST__"
+              cpu: "__ES_CPU_REQUEST__"
+            limits:
+              memory: "__ES_MEM_LIMIT__"
+              cpu: "__ES_CPU_LIMIT__"
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          volumeMounts:
+            - name: es-data
+              mountPath: /usr/share/elasticsearch/data
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?wait_for_status=yellow&timeout=5s
+              port: 9200
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: es-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            cpu: "__ES_CPU_REQUEST__"
-            memory: "__ES_MEM_REQUEST__"
-          limits:
-            cpu: "__ES_CPU_LIMIT__"
-            memory: "__ES_MEM_LIMIT__"
-        volumeMounts:
-        - name: data
-          mountPath: /usr/share/elasticsearch/data
-        securityContext:
-          capabilities:
-            add: ["IPC_LOCK"]
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: es-data
+            storage: "__ES_STORAGE__"
 ---
+# Internal headless service (StatefulSet DNS, used by loader pods)
 apiVersion: v1
 kind: Service
 metadata:
@@ -86,6 +92,26 @@ spec:
   selector:
     app: elasticsearch
   ports:
-  - name: http
-    port: 9200
-    targetPort: 9200
+    - name: http
+      port: 9200
+      targetPort: 9200
+    - name: transport
+      port: 9300
+      targetPort: 9300
+  clusterIP: None
+---
+# NodePort service — external access for fire-load.py --host
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-np
+  namespace: __NAMESPACE__
+spec:
+  type: NodePort
+  selector:
+    app: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+      nodePort: 30920

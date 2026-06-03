@@ -34,6 +34,19 @@ if ! kubectl get namespace $NS > /dev/null 2>&1; then
   exit 1
 fi
 
+# Ensure Elasticsearch is running (cleanup from previous runs may have scaled it to 0)
+ES_REPLICAS=$(kubectl get statefulset elasticsearch -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
+if [ "${ES_REPLICAS:-0}" -lt 1 ]; then
+  echo "Scaling Elasticsearch back up..."
+  kubectl scale statefulset elasticsearch -n $NS --replicas=1 > /dev/null
+  echo "Waiting for Elasticsearch to be ready (up to 5 minutes)..."
+  kubectl wait --for=condition=ready pod -l app=elasticsearch -n $NS --timeout=300s
+  echo "Elasticsearch ready. Giving it 15s to fully initialize..."
+  sleep 15
+else
+  echo "Elasticsearch already running."
+fi
+
 CURRENT=$(kubectl get deployment es-loader -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)
 if [ "${CURRENT:-0}" -lt $DESIRED_REPLICAS ]; then
   echo "Scaling loader to $DESIRED_REPLICAS..."

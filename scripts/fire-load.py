@@ -31,6 +31,7 @@ parser.add_argument("--host",       default=None)
 parser.add_argument("--target-ram", type=int, default=None)
 parser.add_argument("--duration",   type=int, default=None, help="minutes")
 parser.add_argument("--threads",    type=int, default=None)
+parser.add_argument("--warmup",     type=int, default=None, help="warmup minutes at full throttle before timed experiment (default 0)")
 parser.add_argument("--yes",        action="store_true")
 args = parser.parse_args()
 
@@ -46,11 +47,12 @@ def prompt_int(msg, lo, hi, default):
             print("  Enter a number")
 
 es_host        = args.host       or dotenv.get("ES_HOST") or "http://localhost:30920"
-target_ram_pct = args.target_ram or prompt_int("RAM % target", 10, 95, 75)
-duration_min   = args.duration   or prompt_int("Duration in minutes", 1, 480, 30)
-n_threads      = args.threads    or prompt_int("Loader threads", 1, 32, 4)
+target_ram_pct = args.target_ram if args.target_ram is not None else prompt_int("RAM % target", 10, 95, 75)
+duration_min   = args.duration   if args.duration   is not None else prompt_int("Duration in minutes", 1, 480, 30)
+n_threads      = args.threads    if args.threads    is not None else prompt_int("Loader threads", 1, 32, 4)
+warmup_min     = args.warmup     if args.warmup     is not None else prompt_int("Warmup minutes (0 to skip)", 0, 60, 0)
 
-print("\nHost: " + es_host + "  |  RAM target: " + str(target_ram_pct) + "%  |  " + str(duration_min) + " min  |  " + str(n_threads) + " threads")
+print("\nHost: " + es_host + "  |  RAM target: " + str(target_ram_pct) + "%  |  warmup: " + str(warmup_min) + "min  |  experiment: " + str(duration_min) + "min  |  " + str(n_threads) + " threads")
 if not args.yes:
     if input("Start? [Y/n]: ").strip().lower() not in ("", "y", "yes"):
         print("Aborted."); sys.exit(0)
@@ -98,11 +100,16 @@ def ram_monitor_loop(stop):
         refresh_ram()
         time.sleep(3)
 
-_throttle = 1.0
-_tlock    = threading.Lock()
+_throttle      = 1.0
+_tlock         = threading.Lock()
+_in_warmup     = True
 
 def update_throttle():
     global _throttle
+    if _in_warmup:
+        with _tlock:
+            _throttle = 1.0
+        return
     with _tlock:
         _throttle = max(0.05, min(1.0, _throttle + (target_ram_pct - _ram_pct) * 0.04))
 
@@ -227,6 +234,26 @@ def progress_loop(end_time):
         time.sleep(5)
     print()
 
+def warmup_loop(end_time):
+    while not _stop.is_set() and time.time() < end_time:
+        elapsed = time.time() - warmup_start_t
+        total   = warmup_min * 60
+        with _dlock: docs = _docs_total
+        pct  = min(1.0, elapsed / total)
+        bar  = "#" * int(20 * pct) + "-" * (20 - int(20 * pct))
+        left = max(0, end_time - time.time())
+        sys.stdout.write(
+            "\r[WARMUP " + bar + "] " +
+            str(round(elapsed/60, 1)) + "/" + str(warmup_min) + "min  " +
+            "RAM:" + str(round(_ram_pct, 1)) + "%→" + str(target_ram_pct) + "%  (" +
+            str(round(_ram_used, 1)) + "/" + str(round(_ram_total, 1)) + "GiB)  " +
+            "docs:" + str(docs) + "  " +
+            "left:" + str(round(left/60, 1)) + "min   "
+        )
+        sys.stdout.flush()
+        time.sleep(5)
+    print()
+
 def cleanup_indices():
     print("Deleting stress indices to release segment memory...")
     for i in range(N_IDX):
@@ -241,9 +268,6 @@ def _sigint(s, f):
     _stop.set()
 
 signal.signal(signal.SIGINT, _sigint)
-
-start_t  = time.time()
-end_time = start_t + duration_min * 60
 
 _ram_stop = threading.Event()
 threading.Thread(target=ram_monitor_loop, args=(_ram_stop,), daemon=True).start()
@@ -262,11 +286,26 @@ for i in range(n_threads):
     threading.Thread(target=worker, args=(i,), daemon=True).start()
     time.sleep(0.1)
 
-progress_loop(end_time)
+# warmup phase
+if warmup_min > 0 and not _stop.is_set():
+    print("Warmup: indexing at full throttle for " + str(warmup_min) + " min to fill caches...")
+    warmup_start_t = time.time()
+    warmup_loop(warmup_start_t + warmup_min * 60)
+
+# switch P-controller on
+_in_warmup = False
+
+# timed experiment
+start_t  = time.time()
+end_time = start_t + duration_min * 60
+if not _stop.is_set():
+    print("Experiment: holding RAM at " + str(target_ram_pct) + "% for " + str(duration_min) + " min...")
+    progress_loop(end_time)
+
 _stop.set()
 _ram_stop.set()
 
-print("\nDone. " + str(round((time.time()-start_t)/60, 1)) + " min | " + str(_docs_total) + " docs | final RAM " + str(round(_ram_pct, 1)) + "%")
+print("\nDone. experiment=" + str(round((time.time()-start_t)/60, 1)) + "min | " + str(_docs_total) + " docs | final RAM " + str(round(_ram_pct, 1)) + "%")
 cleanup_indices()
 
 stop_sh = repo_root / "stop.sh"
